@@ -40,7 +40,6 @@ entity gba_top is
       maxpixels             : in     std_logic;                    -- limit pixels per line
       specialmodule         : in     std_logic;                    -- 0 = off, 1 = use gamepak GPIO Port at address 0x080000C4..0x080000C8
       Rumble                : out    std_logic := '0';              -- GPIO bit 3 at 0x80000C4 (Drill Dozer / WarioWare Twisted)
-      Rumble_seq            : out    std_logic := '0';              -- ChisFlash unlock+control rumble (../ChisFlashGBARumbleCollect/patcher/payload.c)
       savestate_number      : in     integer;
       -- RTC
       RTC_timestampNew      : in     std_logic;                     -- new current timestamp from system
@@ -652,7 +651,6 @@ begin
        AnalogTiltX          => AnalogTiltX,
        AnalogTiltY          => AnalogTiltY,
        
-       rumble_seq           => Rumble_seq,
 
        debug_mem            => debug_mem      
     );

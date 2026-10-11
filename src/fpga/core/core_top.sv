@@ -244,11 +244,7 @@ assign bridge_endian_little = 0;
 // 33.554 MHz to clk_74a: flip AD1, 268 ns setup, 268 ns /WR low, repeat
 // every 2.54 ms (~394 flips/s, ~197 Hz on AD1).
 
-wire cart_rumble_gpio;               // GPIO bit 3 rumble from gba_top, clk_sys domain
-wire cart_rumble_seq;                // ChisFlash sequence-detector rumble, clk_sys domain
-// OR together: ChisFlash unlock+control protocol (../ChisFlashGBARumbleCollect/patcher/payload.c)
-// drives cart_rumble_seq; Drill Dozer/WarioWare GPIO rumble drives cart_rumble_gpio.
-wire cart_rumble = cart_rumble_gpio | cart_rumble_seq;
+wire cart_rumble;                    // GPIO bit 3 rumble from gba_top, clk_sys domain
 wire cart_rumble_74;                 // synced to clk_74a
 synch_3 cart_rumble_sync(cart_rumble, cart_rumble_74, clk_74a);
 
@@ -1701,8 +1697,7 @@ gba_top #(
     .load_state          ( ss_load ),
     .maxpixels           ( quirk_sprite ),
     .specialmodule       ( quirk_gpio | force_rtc_s ),
-    .Rumble              ( cart_rumble_gpio ),
-    .Rumble_seq          ( cart_rumble_seq ),
+    .Rumble              ( cart_rumble ),
     .savestate_number    ( 0 ),
     // RTC
     .RTC_timestampNew    ( rtc_new_s ),
