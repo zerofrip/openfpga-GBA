@@ -60,6 +60,7 @@ module cart_quirks (
             if (cart_id[31:8] == "BR4") begin gpio_quirk <= 1; rtc_quirk <= 1; end // RTC
             if (cart_id[31:8] == "V49") gpio_quirk <= 1; // rumble
             if (cart_id[31:8] == "2GB") gpio_quirk <= 1; // GPIO
+            if (cart_id[31:8] == "BPP") gpio_quirk <= 1; // rumble (Pokemon Pinball R&S, GPIO-patched ROM)
 
             // === Sprite quirk only ===
             if (cart_id[31:8] == "BHG") sprite_quirk <= 1; // sprite limit
