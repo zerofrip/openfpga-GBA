@@ -40,7 +40,7 @@ entity gba_top is
       maxpixels             : in     std_logic;                    -- limit pixels per line
       specialmodule         : in     std_logic;                    -- 0 = off, 1 = use gamepak GPIO Port at address 0x080000C4..0x080000C8
       Rumble                : out    std_logic := '0';              -- GPIO bit 3 at 0x80000C4 (Drill Dozer / WarioWare Twisted)
-      -- solar/tilt/gyro removed to save ALMs (only affects <2% of games)
+      Rumble_seq            : out    std_logic := '0';              -- ChisFlash unlock+control rumble (../ChisFlashGBARumbleCollect/patcher/payload.c)
       savestate_number      : in     integer;
       -- RTC
       RTC_timestampNew      : in     std_logic;                     -- new current timestamp from system
@@ -95,9 +95,11 @@ entity gba_top is
       KeyUp                 : in     std_logic;
       KeyDown               : in     std_logic;
       KeyR                  : in     std_logic;
-      KeyL                  : in     std_logic;
-      -- AnalogTiltX/Y and Rumble removed (solar/gyro/tilt/rumble stripped)
-      -- Link cable I/O. Each physical pin has one centrally selected value/OE
+       KeyL                  : in     std_logic;
+       tilt                  : in     std_logic;                    -- tilt-module cart (KHP/KYG)
+       AnalogTiltX           : in     signed(7 downto 0);           -- left-stick X for tilt/gyro
+       AnalogTiltY           : in     signed(7 downto 0);           -- left-stick Y for tilt module
+       -- Link cable I/O. Each physical pin has one centrally selected value/OE
       -- pair plus feedback from the pin, shared by every serial mode.
       serial_so_out         : out    std_logic;
       serial_so_oe          : out    std_logic;
@@ -231,14 +233,16 @@ architecture arch of gba_top is
    signal PALETTE_OAM_dataout  : std_logic_vector(31 downto 0);
    signal PALETTE_OAM_we       : std_logic_vector(3 downto 0);
    
-   signal GPIO_done            : std_logic;
-   signal GPIO_readEna         : std_logic;
-   signal GPIO_Din             : std_logic_vector(3 downto 0);
-   signal GPIO_Dout            : std_logic_vector(3 downto 0);
-   signal GPIO_writeEna        : std_logic;
-   signal GPIO_addr            : std_logic_vector(1 downto 0);
-   
-   signal gbaon                : std_logic := '0';
+    signal GPIO_done            : std_logic;
+    signal GPIO_readEna         : std_logic;
+    signal GPIO_Din             : std_logic_vector(3 downto 0);
+    signal GPIO_Dout            : std_logic_vector(3 downto 0);
+    signal GPIO_writeEna        : std_logic;
+    signal GPIO_addr            : std_logic_vector(1 downto 0);
+    
+    signal rumble_gpio          : std_logic;
+    
+    signal gbaon                : std_logic := '0';
    signal gpu_out_active       : std_logic;
    
    signal Linetimerdebug : unsigned(8 downto 0);
@@ -517,12 +521,15 @@ begin
       RTC_saveLoaded       => RTC_saveLoaded,    
       RTC_timestampOut     => RTC_timestampOut,  
       RTC_savedtimeOut     => RTC_savedtimeOut,  
-      RTC_inuse            => RTC_inuse,
+       RTC_inuse            => RTC_inuse,
 
-      rumble               => Rumble
-   );
-   
-   process (clk100)
+       AnalogX              => AnalogTiltX,
+       rumble               => rumble_gpio
+    );
+    
+    Rumble <= rumble_gpio;
+    
+    process (clk100)
    begin
       if rising_edge(clk100) then
    
@@ -641,12 +648,14 @@ begin
       GPIO_writeEna        => GPIO_writeEna,
       GPIO_addr            => GPIO_addr,    
       
-      tilt                 => '0',
-      AnalogTiltX          => (others => '0'),
-      AnalogTiltY          => (others => '0'),
+       tilt                 => tilt,
+       AnalogTiltX          => AnalogTiltX,
+       AnalogTiltY          => AnalogTiltY,
+       
+       rumble_seq           => Rumble_seq,
 
-      debug_mem            => debug_mem      
-   );
+       debug_mem            => debug_mem      
+    );
    
    igba_dma : entity work.gba_dma
    port map

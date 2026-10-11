@@ -244,7 +244,11 @@ assign bridge_endian_little = 0;
 // 33.554 MHz to clk_74a: flip AD1, 268 ns setup, 268 ns /WR low, repeat
 // every 2.54 ms (~394 flips/s, ~197 Hz on AD1).
 
-wire cart_rumble;                    // from gba_top, clk_sys domain
+wire cart_rumble_gpio;               // GPIO bit 3 rumble from gba_top, clk_sys domain
+wire cart_rumble_seq;                // ChisFlash sequence-detector rumble, clk_sys domain
+// OR together: ChisFlash unlock+control protocol (../ChisFlashGBARumbleCollect/patcher/payload.c)
+// drives cart_rumble_seq; Drill Dozer/WarioWare GPIO rumble drives cart_rumble_gpio.
+wire cart_rumble = cart_rumble_gpio | cart_rumble_seq;
 wire cart_rumble_74;                 // synced to clk_74a
 synch_3 cart_rumble_sync(cart_rumble, cart_rumble_74, clk_74a);
 
@@ -961,6 +965,7 @@ wire        quirk_gpio;       // → specialmodule
 wire        quirk_rtc;
 wire        quirk_memory_remap; // → memory_remap
 wire        quirk_sprite;     // → maxpixels
+wire        quirk_tilt;       // → tilt-module enable (KHP/KYG)
 
 cart_quirks quirks (
     .clk           ( clk_sys ),
@@ -969,7 +974,7 @@ cart_quirks quirks (
     .sram_quirk    ( quirk_sram ),
     .gpio_quirk    ( quirk_gpio ),
     .rtc_quirk     ( quirk_rtc ),
-    .tilt_quirk    (),
+    .tilt_quirk    ( quirk_tilt ),
     .solar_quirk   (),
     .memory_remap  ( quirk_memory_remap ),
     .sprite_quirk  ( quirk_sprite )
@@ -1535,6 +1540,20 @@ synch_3 #(.WIDTH(32)) cont1_sync (
     .clk ( clk_sys )
 );
 
+// Synchronize cont1_joy from clk_74a into clk_sys domain
+wire [31:0] cont1_joy_s;
+synch_3 #(.WIDTH(32)) cont1_joy_sync (
+    .i   ( cont1_joy ),
+    .o   ( cont1_joy_s ),
+    .clk ( clk_sys )
+);
+
+// Analog stick → signed tilt axes. Pocket reports unsigned bytes with 0x80 = center,
+// matching MiSTer's signed AnalogTiltX/AnalogTiltY convention after subtracting 128.
+// If no analog data is present (all zeroes), force centered to avoid full-left bias.
+wire signed [7:0] tilt_x_s = (cont1_joy_s[15:0] == 16'h0000) ? 8'sd0 : (cont1_joy_s[7:0]   - 8'sd128);
+wire signed [7:0] tilt_y_s = (cont1_joy_s[15:0] == 16'h0000) ? 8'sd0 : (cont1_joy_s[15:8] - 8'sd128);
+
 // GBA buttons — active-high (1 = pressed), matching gba_top.vhd Key* ports
 // Pocket cont1_key is also active-high, so no inversion needed
 // Pocket bitmap: [0]=up [1]=down [2]=left [3]=right [4]=A [5]=B [6]=X [7]=Y [8]=L1 [9]=R1 [14]=sel [15]=start
@@ -1682,7 +1701,8 @@ gba_top #(
     .load_state          ( ss_load ),
     .maxpixels           ( quirk_sprite ),
     .specialmodule       ( quirk_gpio | force_rtc_s ),
-    .Rumble              ( cart_rumble ),
+    .Rumble              ( cart_rumble_gpio ),
+    .Rumble_seq          ( cart_rumble_seq ),
     .savestate_number    ( 0 ),
     // RTC
     .RTC_timestampNew    ( rtc_new_s ),
@@ -1738,7 +1758,9 @@ gba_top #(
     .KeyDown             ( key_down ),
     .KeyR                ( key_r ),
     .KeyL                ( key_l ),
-    // AnalogTiltX/Y and Rumble removed (solar/gyro/tilt/rumble stripped)
+    .tilt                ( quirk_tilt ),
+    .AnalogTiltX         ( tilt_x_s ),
+    .AnalogTiltY         ( tilt_y_s ),
     // Link cable pins — value, output-enable, and physical feedback per pin
     .serial_so_out       ( serial_so_out ),
     .serial_so_oe        ( serial_so_oe ),

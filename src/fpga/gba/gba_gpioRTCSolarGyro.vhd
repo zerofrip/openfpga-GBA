@@ -27,12 +27,13 @@ entity gba_gpioRTCSolarGyro is
       RTC_timestampSaved   : in     std_logic_vector(31 downto 0); -- timestamp in seconds, saved time
       RTC_savedtimeIn      : in     std_logic_vector(41 downto 0); -- time structure, loaded
       RTC_saveLoaded       : in     std_logic;                     -- must be 0 when loading new game, should go and stay 1 when RTC was loaded and values are valid
-      RTC_timestampOut     : out    std_logic_vector(31 downto 0); -- timestamp to be saved
-      RTC_savedtimeOut     : out    std_logic_vector(41 downto 0); -- time structure to be saved
-      RTC_inuse            : out    std_logic := '0';              -- will indicate that RTC is in use and should be saved on next saving
+       RTC_timestampOut     : out    std_logic_vector(31 downto 0); -- timestamp to be saved
+       RTC_savedtimeOut     : out    std_logic_vector(41 downto 0); -- time structure to be saved
+       RTC_inuse            : out    std_logic := '0';              -- will indicate that RTC is in use and should be saved on next saving
 
-      rumble               : out    std_logic := '0'
-   );
+       AnalogX              : in     signed(7 downto 0);            -- WarioWare Twisted gyro analog input (MiSTer AnalogTiltX)
+       rumble               : out    std_logic := '0'
+    );
 end entity;
 
 architecture arch of gba_gpioRTCSolarGyro is
@@ -51,10 +52,16 @@ architecture arch of gba_gpioRTCSolarGyro is
    signal enable    : std_logic;
    signal command   : std_logic_vector(7 downto 0);
    signal dataLen   : unsigned(2 downto 0);
-   signal bits      : unsigned(5 downto 0); -- 0..55 max (8*7)
-   signal clockslow : unsigned(7 downto 0);
-   
-   type t_data is array(0 to 6) of std_logic_vector(7 downto 0);
+    signal bits      : unsigned(5 downto 0); -- 0..55 max (8*7)
+    signal clockslow : unsigned(7 downto 0);
+    
+    -- WarioWare Twisted gyro sensor (restored from upstream gba_gpioRTCSolarGyro)
+    constant GYRO_MIN    : unsigned(15 downto 0) := x"00C1";   -- ADC floor (~194)
+    constant GYRO_MIDDLE : unsigned(15 downto 0) := x"0D80";   -- ADC center rest position (~3456)
+    constant GYRO_MAX    : unsigned(15 downto 0) := x"0EFF";   -- ADC ceiling (~3839)
+    signal gyrosensor    : unsigned(15 downto 0);
+    
+    type t_data is array(0 to 6) of std_logic_vector(7 downto 0);
    signal data : t_data := (others => (others => '0'));
    
    signal bitcheck : integer range 0 to 55;
@@ -100,6 +107,23 @@ architecture arch of gba_gpioRTCSolarGyro is
    signal SAVESTATE_GPIOBITS_BACK : std_logic_vector(21 downto 16);
    
 begin 
+
+   -- WarioWare Twisted gyro generation
+   -- Deadzone at rest (|AnalogX| <= 5), saturate beyond +/-110.
+   process (clk100)
+   begin
+      if rising_edge(clk100) then
+         if (AnalogX < -110) then
+            gyrosensor <= GYRO_MIN;
+         elsif (AnalogX > 110) then
+            gyrosensor <= GYRO_MAX;
+         elsif (abs(AnalogX) > 5) then
+            gyrosensor <= unsigned(resize(signed(GYRO_MIDDLE) + resize(AnalogX / 2, 16), 16));
+         else
+            gyrosensor <= GYRO_MIDDLE;
+         end if;
+      end if;
+   end process;
 
    iSAVESTATE_GPIO     : entity work.eProcReg_gba generic map (REG_SAVESTATE_GPIO)     port map (clk100, savestate_bus, SAVESTATE_GPIO_BACK,     SAVESTATE_GPIO);
    iSAVESTATE_GPIOBITS : entity work.eProcReg_gba generic map (REG_SAVESTATE_GPIOBITS) port map (clk100, savestate_bus, SAVESTATE_GPIOBITS_BACK, SAVESTATE_GPIOBITS);
@@ -152,6 +176,9 @@ begin
             
             RTC_inuse <= RTC_saveLoaded;
             
+         elsif (gba_on = '0') then
+            clockslow <= (others => '0');         -- clear gyro bit-clock on game unload
+            
          elsif (gba_on = '1') then
          
             if (RTC_saveLoaded = '1') then
@@ -170,15 +197,18 @@ begin
                   when "01" => -- 0x80000c6
                      GPIO_Din <= selected;
                
-                  when "00" => -- 0x80000c4
-                     if (enable = '1') then
-                        
-                        -- RTC
-                        if (selected(2) = '1') then
-                           GPIO_Din <= retval;
-                        end if;
-                        
-                     end if;
+                   when "00" => -- 0x80000c4
+                      if (enable = '1') then
+                         
+                         -- RTC
+                         if (selected(2) = '1') then
+                            GPIO_Din <= retval;
+                         -- WarioWare Twisted gyro (device select x"B")
+                         elsif (selected = x"B") then
+                            GPIO_Din(2) <= gyrosensor(to_integer(clockslow(3 downto 0)));
+                         end if;
+                         
+                      end if;
                
                   when others => null;
                end case;
@@ -197,17 +227,24 @@ begin
                         rumble <= '0';
                      end if;
 
-                  when "00" => -- 0x80000c4
+                   when "00" => -- 0x80000c4
 
-                     -- rumble
-                     if (selected(3) = '1') then
-                        rumble <= GPIO_Dout(3);
-                     end if;
+                      -- rumble
+                      if (selected(3) = '1') then
+                         rumble <= GPIO_Dout(3);
+                      end if;
 
-                     -- RTC
-                     --if (selected(2) = '1') then -- don't check for clock as Sennen Kazoku doesn't handle it "correct"
-                     
-                        if (state = IDLE and retval = x"1" and GPIO_Dout = x"5") then
+                      -- WarioWare Twisted gyro (device select x"B")
+                      if (selected = x"B") then
+                         if (GPIO_Dout(1) = '1') then clockslow <= clockslow - 1; end if;
+                         if (GPIO_Dout(0) = '1') then clockslow <= to_unsigned(15, clockslow'length); end if;
+                         retval <= GPIO_Dout and selected;
+                      end if;
+
+                      -- RTC
+                      --if (selected(2) = '1') then -- don't check for clock as Sennen Kazoku doesn't handle it "correct"
+                      
+                         if (state = IDLE and retval = x"1" and GPIO_Dout = x"5") then
                         
                            state   <= COMMANDSTATE;
                            bits    <= (others => '0');

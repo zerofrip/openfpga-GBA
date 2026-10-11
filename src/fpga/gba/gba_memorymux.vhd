@@ -113,12 +113,14 @@ entity gba_memorymux is
       GPIO_writeEna        : out    std_logic := '0';
       GPIO_addr            : out    std_logic_vector(1 downto 0);
       
-      tilt                 : in     std_logic;
-      AnalogTiltX          : in     signed(7 downto 0);
-      AnalogTiltY          : in     signed(7 downto 0);
-      
-      debug_mem            : out    std_logic_vector(31 downto 0)
-   );
+       tilt                 : in     std_logic;
+       AnalogTiltX          : in     signed(7 downto 0);
+       AnalogTiltY          : in     signed(7 downto 0);
+       
+       rumble_seq           : out    std_logic := '0';              -- ChisFlash unlock+control sequence rumble output
+       
+       debug_mem            : out    std_logic_vector(31 downto 0)
+    );
 end entity;
 
 architecture arch of gba_memorymux is
@@ -256,11 +258,25 @@ architecture arch of gba_memorymux is
    signal flash_savecount : integer range 0 to 131072;
    signal flash_savedata  : std_logic_vector(7 downto 0);
    
-   -- tilt
-   signal tilt_x : unsigned(11 downto 0);
-   signal tilt_y : unsigned(11 downto 0);
-   
-   -- savestate
+    -- tilt
+    signal tilt_x : unsigned(11 downto 0);
+    signal tilt_y : unsigned(11 downto 0);
+    
+    -- ChisFlashGBARumbleCollect sequence detector
+    -- Reference: ../ChisFlashGBARumbleCollect/patcher/payload.c
+    -- Unlock: 0xD200 @ 0x09FE0000, 0x1500 @ 0x08000000, 0xD200 @ 0x08020000,
+    --         0x1500 @ 0x08040000, 0xF1   @ 0x09E20000, 0x1500 @ 0x09FC0000.
+    -- Control: 0x02 = rumble ON, 0x00 = rumble OFF @ 0x08001000.
+    type tRumbleSeqState is
+    (
+       C_IDLE,
+       C_S1, C_S2, C_S3, C_S4, C_S5, C_S6,
+       C_OPEN
+    );
+    signal rumble_seq_state : tRumbleSeqState := C_IDLE;
+    signal rumble_seq_o     : std_logic := '0';
+    
+    -- savestate
    signal SAVESTATE_EEPROM  : std_logic_vector(31 downto 0);
    signal SAVESTATE_FLASH   : std_logic_vector(16 downto 0);
    
@@ -1431,10 +1447,84 @@ begin
          end case;
       
       end if;
-   end process;
-   
+    end process;
+    
+    -- ChisFlashGBARumbleCollect sequence detector
+    -- Watches ROM-space (x8/x9) cart writes while the front-port is in IDLE.
+    -- mem_bus_ena is a 1-cycle pulse per CPU/DMA transaction, so this fires
+    -- exactly once per write. Only ROM-space writes can mismatch-reset the FSM;
+    -- writes to WRAM/IO/SRAM are ignored and tolerated between unlock steps.
+    process (clk100)
+    begin
+       if rising_edge(clk100) then
+       
+          if (gb_on = '0' or (gb_on = '1' and gb_on_1 = '0')) then
+             rumble_seq_state <= C_IDLE;
+             rumble_seq_o     <= '0';
+          elsif (state = IDLE and mem_bus_ena = '1' and mem_bus_rnw = '0' and mem_bus_Adr(31 downto 28) = x"0") then
+             if (mem_bus_Adr(27 downto 24) = x"8" or mem_bus_Adr(27 downto 24) = x"9") then
+                case rumble_seq_state is
+                   when C_IDLE =>
+                      -- step 1: 16-bit write 0xD200 @ 0x09FE0000
+                      if (mem_bus_Adr(27 downto 0) = x"9FE0000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"D200") then
+                         rumble_seq_state <= C_S1;
+                      end if;
+                   when C_S1 =>
+                      -- step 2: 16-bit write 0x1500 @ 0x08000000
+                      if (mem_bus_Adr(27 downto 0) = x"8000000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"1500") then
+                         rumble_seq_state <= C_S2;
+                      else
+                         rumble_seq_state <= C_IDLE;
+                      end if;
+                   when C_S2 =>
+                      -- step 3: 16-bit write 0xD200 @ 0x08020000
+                      if (mem_bus_Adr(27 downto 0) = x"8020000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"D200") then
+                         rumble_seq_state <= C_S3;
+                      else
+                         rumble_seq_state <= C_IDLE;
+                      end if;
+                   when C_S3 =>
+                      -- step 4: 16-bit write 0x1500 @ 0x08040000
+                      if (mem_bus_Adr(27 downto 0) = x"8040000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"1500") then
+                         rumble_seq_state <= C_S4;
+                      else
+                         rumble_seq_state <= C_IDLE;
+                      end if;
+                   when C_S4 =>
+                      -- step 5: halfword write 0x00F1 @ 0x09E20000 (payload.c: strh r1,[r3] where r1=0xF1)
+                      if (mem_bus_Adr(27 downto 0) = x"9E20000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"00F1") then
+                         rumble_seq_state <= C_S5;
+                      else
+                         rumble_seq_state <= C_IDLE;
+                      end if;
+                   when C_S5 =>
+                      -- step 6: 16-bit write 0x1500 @ 0x09FC0000
+                      if (mem_bus_Adr(27 downto 0) = x"9FC0000" and (mem_bus_acc = ACCESS_16BIT or mem_bus_acc = ACCESS_32BIT) and mem_bus_dout(15 downto 0) = x"1500") then
+                         rumble_seq_state <= C_OPEN;
+                      else
+                         rumble_seq_state <= C_IDLE;
+                      end if;
+                   when C_OPEN =>
+                      -- control: byte 0x02 = ON, 0x00 = OFF @ 0x08001000
+                      if (mem_bus_Adr(27 downto 0) = x"8001000" and mem_bus_acc = ACCESS_8BIT) then
+                         if (mem_bus_dout(7 downto 0) = x"02") then
+                            rumble_seq_o <= '1';
+                         elsif (mem_bus_dout(7 downto 0) = x"00") then
+                            rumble_seq_o <= '0';
+                         end if;
+                      end if;
+                      -- stay unlocked for repeated ON/OFF frames
+                   when others =>
+                      rumble_seq_state <= C_IDLE;
+                end case;
+             end if;
+          end if;
+       end if;
+    end process;
+    
+    rumble_seq <= rumble_seq_o;
 
-end architecture;
+ end architecture;
 
 
 
